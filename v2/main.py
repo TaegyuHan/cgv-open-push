@@ -8,6 +8,7 @@
     python main.py test-notify   Discord 웹훅 연결 확인
 """
 
+import datetime
 import logging
 import signal
 import sys
@@ -47,6 +48,24 @@ def build_settings():
     }
 
 
+_last_heartbeat_date = None
+
+
+def _maybe_heartbeat(watchers, notifier):
+    """설정된 시각이 지나면 하루 한 번만 생존 신고를 보낸다."""
+    global _last_heartbeat_date
+    if config.HEARTBEAT_HOUR < 0:
+        return
+    now = datetime.datetime.now()
+    if _last_heartbeat_date == now.date() or now.hour < config.HEARTBEAT_HOUR:
+        return
+    _last_heartbeat_date = now.date()
+    try:
+        notifier.send_heartbeat([w.snapshot() for w in watchers])
+    except Exception as exc:
+        log.warning("생존 신고 전송 실패: %s", exc)
+
+
 def cmd_run():
     targets = config.load_targets()
     notifier = DiscordNotifier(config.DISCORD_WEBHOOK_URL, config.DISCORD_MENTION)
@@ -70,6 +89,11 @@ def cmd_run():
 
     stopping = threading.Event()
 
+    # 시작 메시지가 이미 생존을 알리므로, 오늘 하트비트 시각이 지났다면 내일부터 보낸다.
+    global _last_heartbeat_date
+    now = datetime.datetime.now()
+    _last_heartbeat_date = now.date() if now.hour >= config.HEARTBEAT_HOUR else None
+
     def handle_signal(signum, _frame):
         log.info("종료 신호 수신 (%s)", signal.Signals(signum).name)
         stopping.set()
@@ -83,6 +107,7 @@ def cmd_run():
     try:
         while any(w.is_alive() for w in watchers) and not stopping.is_set():
             stopping.wait(1)
+            _maybe_heartbeat(watchers, notifier)
     except KeyboardInterrupt:
         log.info("종료 요청됨")
     finally:

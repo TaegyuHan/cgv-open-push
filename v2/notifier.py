@@ -71,7 +71,12 @@ class DiscordNotifier:
                     "title": f"🎬 {group['movie']}",
                     "url": group["url"],
                     "color": COLOR_OPEN,
-                    "description": f"### [👉 지금 바로 예매하기]({group['url']})",
+                    "description": (
+                        f"### [👉 지금 바로 예매하기]({group['url']})\n"
+                        f"-# 페이지가 영화별로 묶여 있습니다. "
+                        f"**{group['movie']}** → **{group['screen']}** 을 찾으세요 "
+                        f"(`특별관` 탭 또는 Ctrl+F 검색)"
+                    ),
                     "fields": [
                         {"name": "날짜", "value": _format_date(group["date"]), "inline": True},
                         {"name": "상영관", "value": group["screen"], "inline": True},
@@ -107,6 +112,49 @@ class DiscordNotifier:
 
     def send_text(self, message, color=COLOR_INFO):
         self._post({"embeds": [{"description": message, "color": color}]})
+
+    def send_heartbeat(self, snapshots):
+        """하루 1회 생존 신고. 새 회차가 없어도 감시가 살아 있음을 알린다."""
+        import time as _time
+
+        lines = []
+        healthy = True
+        for snap in snapshots:
+            if snap["blocked"]:
+                healthy = False
+                status = "⛔ 접근 제한됨"
+            elif snap["last_ok_at"] and _time.time() - snap["last_ok_at"] > 600:
+                healthy = False
+                status = "⚠️ 최근 응답 없음"
+            else:
+                status = "✅ 정상"
+            span = (
+                f"{_format_date(snap['first'])} ~ {_format_date(snap['last'])}"
+                if snap["first"]
+                else "-"
+            )
+            lines.append(
+                f"**{snap['name']}** {status}\n"
+                f"　예매 가능 일자 **{snap['dates']}일** ({span})\n"
+                f"　감시 중인 회차 **{snap['showtimes']}개**"
+            )
+
+        body = "\n\n".join(lines)
+        self._post(
+            {
+                "embeds": [
+                    {
+                        "title": "🫀 감시 정상 동작 중",
+                        "description": (
+                            f"{body}\n\n"
+                            "새 회차가 열리면 즉시 알림이 갑니다. "
+                            "이 메시지는 하루 1회 생존 확인용입니다."
+                        ),
+                        "color": COLOR_INFO if healthy else 0xE74C3C,
+                    }
+                ]
+            }
+        )
 
 
 def _format_date(ymd):

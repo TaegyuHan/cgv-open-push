@@ -31,7 +31,7 @@ from cgv_api import CgvApi, CgvApiError, CgvBlockedError, booking_url
 log = logging.getLogger(__name__)
 
 # 예매 창 뒤쪽 몇 일을 우선 감시할지. 신작 회차는 보통 뒤쪽에 먼저 붙는다.
-PRIORITY_TAIL_DAYS = 14
+PRIORITY_TAIL_DAYS = 7
 
 # 전체 구간 스윕 주기(초).
 FULL_SWEEP_INTERVAL = 300.0
@@ -127,10 +127,27 @@ class TargetWatcher(threading.Thread):
         self.known_dates = set()
         self.known_keys = set()
         self.block_count = 0
+        self.last_ok_at = 0.0
+        self.error_since_report = 0
         self._stop_event = threading.Event()
 
     def stop(self):
         self._stop_event.set()
+
+    def snapshot(self):
+        """하트비트용 현재 상태 요약."""
+        dates = sorted(self.known_dates)
+        return {
+            "name": self.name_,
+            "dates": len(dates),
+            "first": dates[0] if dates else "",
+            "last": dates[-1] if dates else "",
+            "showtimes": len(self.known_keys),
+            "last_ok_at": self.last_ok_at,
+            "blocked": self.block_count > 0,
+            "errors": self.error_since_report,
+            "link": self.booking_link(dates[0]) if dates else "",
+        }
 
     # ------------------------------------------------------------------ 조회
 
@@ -150,13 +167,24 @@ class TargetWatcher(threading.Thread):
             return {}
         workers = max(1, min(self.settings["sweep_concurrency"], len(dates)))
         results = {}
+        blocked = None
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(self._fetch_date, d): d for d in dates}
             for future, scn_ymd in futures.items():
+                if blocked is not None:
+                    # 이미 차단이 확인되었으면 남은 작업은 시도조차 하지 않는다.
+                    future.cancel()
+                    continue
                 try:
                     results[scn_ymd] = future.result()
+                except CgvBlockedError as exc:
+                    # CgvBlockedError는 CgvApiError의 하위 클래스다.
+                    # 여기서 삼키면 run()의 백오프가 동작하지 않으므로 반드시 올려보낸다.
+                    blocked = exc
                 except CgvApiError as exc:
                     log.warning("[%s] %s 회차 조회 실패: %s", self.name_, scn_ymd, exc)
+        if blocked is not None:
+            raise blocked
         return results
 
     # ------------------------------------------------------------------ 감지
@@ -226,6 +254,13 @@ class TargetWatcher(threading.Thread):
     # ------------------------------------------------------------------ 실행
 
     def booking_link(self, scn_ymd):
+        # siteNm이 없으면 예매 페이지에 시간표가 렌더링되지 않는다.
+        # bootstrap에서 조회에 실패했을 수 있으므로 알림 직전에 한 번 더 시도한다.
+        if not self.site_nm:
+            try:
+                self.site_nm = self.api.site_name(self.site_no)
+            except CgvApiError as exc:
+                log.warning("[%s] 극장명 재조회 실패: %s", self.name_, exc)
         return booking_url(self.site_no, scn_ymd, self.site_nm)
 
     def bootstrap(self):
@@ -265,11 +300,37 @@ class TargetWatcher(threading.Thread):
         return sorted(self.known_dates)[-PRIORITY_TAIL_DAYS:]
 
     def run(self):
-        try:
-            self.bootstrap()
-        except Exception as exc:
-            log.exception("[%s] 초기화 실패: %s", self.name_, exc)
-            self.notifier.send_text(f"⚠️ **{self.name_}** 초기화 실패: {exc}")
+        # 초기화 실패로 감시가 영구히 멈추면 안 된다.
+        # 특히 시작 시점에 차단된 경우, 기다렸다가 다시 시도한다.
+        attempt = 0
+        while not self._stop_event.is_set():
+            try:
+                self.bootstrap()
+                break
+            except CgvBlockedError as exc:
+                cooldown = BLOCK_COOLDOWNS[min(attempt, len(BLOCK_COOLDOWNS) - 1)]
+                log.error(
+                    "[%s] 시작 시 접근 제한: %s → %.0f분 후 재시도",
+                    self.name_, exc, cooldown / 60,
+                )
+                if attempt == 0:
+                    self.notifier.send_text(
+                        f"⚠️ **{self.name_}** 시작 시 CGV 접근이 제한되었습니다.\n"
+                        f"{cooldown / 60:.0f}분 후 자동으로 다시 시도합니다.",
+                        color=0xE74C3C,
+                    )
+                attempt += 1
+                self._stop_event.wait(cooldown)
+            except Exception as exc:
+                attempt += 1
+                log.exception("[%s] 초기화 실패(%s회): %s", self.name_, attempt, exc)
+                if attempt == 1:
+                    self.notifier.send_text(
+                        f"⚠️ **{self.name_}** 초기화 실패: {exc}\n자동으로 다시 시도합니다.",
+                        color=0xE74C3C,
+                    )
+                self._stop_event.wait(min(2 ** min(attempt, 6), 60))
+        if self._stop_event.is_set():
             return
 
         next_fast = time.monotonic()
@@ -296,6 +357,7 @@ class TargetWatcher(threading.Thread):
                     self._register(self._fetch_dates(self._tail_dates()), announce=True)
 
                 failures = 0
+                self.last_ok_at = time.time()
                 # 정상 응답이 돌아왔으므로 차단 단계를 초기화한다.
                 if self.block_count:
                     log.info("[%s] 접근이 정상으로 돌아왔습니다.", self.name_)
@@ -324,6 +386,7 @@ class TargetWatcher(threading.Thread):
                 continue
             except CgvApiError as exc:
                 failures += 1
+                self.error_since_report += 1
                 log.warning("[%s] API 오류(%s회): %s", self.name_, failures, exc)
                 # v1은 오류 시 os.execl로 프로세스를 통째로 재시작했다.
                 # v2는 백오프 후 같은 루프를 계속 돌아 상태를 잃지 않는다.

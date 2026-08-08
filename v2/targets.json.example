@@ -2,18 +2,21 @@
   {
     "name": "용아맥 (용산아이파크몰 IMAX)",
     "site_no": "0013",
+    "site_nm": "용산아이파크몰",
     "scns_no": "018",
     "grade_cd": "03"
   },
   {
     "name": "용산 4DX",
     "site_no": "0013",
+    "site_nm": "용산아이파크몰",
     "scns_no": "003",
     "grade_cd": "02"
   },
   {
     "name": "용산 SCREENX",
     "site_no": "0013",
+    "site_nm": "용산아이파크몰",
     "scns_no": "012",
     "grade_cd": "04"
   }

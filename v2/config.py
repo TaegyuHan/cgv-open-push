@@ -31,7 +31,7 @@ DISCORD_MENTION = os.environ.get("DISCORD_MENTION", "").strip()
 FAST_INTERVAL = _float_env("CGV_FAST_INTERVAL", 5.0)
 
 # 회차 스윕 주기(초). 이미 열려 있던 날짜에 회차가 추가되는 경우를 잡는다.
-SWEEP_INTERVAL = _float_env("CGV_SWEEP_INTERVAL", 30.0)
+SWEEP_INTERVAL = _float_env("CGV_SWEEP_INTERVAL", 60.0)
 
 # 스윕 동시 요청 수. 높이면 순간 요청이 몰려 차단 위험이 커진다.
 SWEEP_CONCURRENCY = _int_env("CGV_SWEEP_CONCURRENCY", 3)
@@ -43,6 +43,11 @@ LOG_PATH = pathlib.Path(os.environ.get("CGV_LOG_PATH", BASE_DIR / "cgv-open-push
 
 HTTP_TIMEOUT = _float_env("CGV_HTTP_TIMEOUT", 8.0)
 
+# 하루 1회 생존 신고를 보낼 시각(0~23시). -1이면 보내지 않는다.
+# CGV는 날짜를 매일 미는 것이 아니라 며칠~일주일 단위로 뭉텅이 오픈하므로
+# 며칠간 알림이 없는 것이 정상이다. 감시가 죽은 것과 구분하기 위해 필요하다.
+HEARTBEAT_HOUR = _int_env("CGV_HEARTBEAT_HOUR", 9)
+
 # 감시 대상 기본값. 용산아이파크몰 IMAX(용아맥)가 주 목표다.
 #   site_no  : 극장 코드
 #   scns_no  : 상영관 번호. 지정하면 응답 크기가 크게 줄어든다.
@@ -51,6 +56,7 @@ DEFAULT_TARGETS = [
     {
         "name": "용아맥 (용산아이파크몰 IMAX)",
         "site_no": "0013",
+        "site_nm": "용산아이파크몰",
         "scns_no": "018",
         "grade_cd": "03",
     },
