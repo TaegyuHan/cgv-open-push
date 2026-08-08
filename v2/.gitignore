@@ -2,3 +2,6 @@ state.json
 *.log
 targets.json
 __pycache__/
+
+# 웹훅 URL이 들어가므로 절대 커밋하지 않는다.
+.env

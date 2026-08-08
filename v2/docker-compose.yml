@@ -1,0 +1,19 @@
+services:
+  cgv-open-push:
+    build: .
+    image: cgv-open-push-v2
+    container_name: cgv-open-push
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - cgv-state:/data
+    # 로그가 무한히 쌓여 디스크를 채우지 않도록 제한한다.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  cgv-state:

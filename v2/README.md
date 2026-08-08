@@ -191,6 +191,95 @@ docker restart cgv-open-push     # 재시작
 docker rm -f cgv-open-push       # 중지 및 삭제
 ```
 
+## 우분투 서버에 배포하기
+
+원격 우분투 서버에서 24시간 돌리는 방법입니다.
+
+### 1. 도커 설치 (이미 있으면 건너뛰기)
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+newgrp docker          # 또는 로그아웃 후 재접속
+docker version         # 확인
+```
+
+### 2. 코드 받기
+
+```bash
+git clone https://github.com/TaegyuHan/cgv-open-push.git
+cd cgv-open-push/v2
+```
+
+### 3. 웹훅 설정
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+`DISCORD_WEBHOOK_URL=` 뒤에 웹훅 주소를 붙여넣고 저장합니다
+(nano 기준 `Ctrl+O` → `Enter` → `Ctrl+X`).
+
+> 따옴표로 감싸지 마세요. `DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...` 형태 그대로입니다.
+
+### 4. 실행
+
+```bash
+docker compose up -d --build
+```
+
+Discord에 **"✅ 시작"** 메시지가 오면 성공입니다.
+
+### 5. 확인
+
+```bash
+docker compose ps              # 상태 (Up 이어야 정상)
+docker compose logs -f         # 실시간 로그 (Ctrl+C 로 빠져나옴)
+```
+
+`기준선 생성 완료: 일자 19개 / 회차 102개` 같은 줄이 보이면 정상 동작 중입니다.
+
+### 자주 쓰는 명령
+
+```bash
+docker compose restart         # 재시작
+docker compose down            # 중지 (상태는 볼륨에 보존됨)
+docker compose up -d           # 다시 시작
+docker compose pull && docker compose up -d --build   # 코드 갱신 후 재배포
+```
+
+### 서버 재부팅 후에는?
+
+`restart: unless-stopped` 가 설정되어 있어 **자동으로 다시 시작됩니다.**
+도커 자체가 부팅 시 켜지는지만 확인하세요.
+
+```bash
+sudo systemctl enable docker
+```
+
+### 알아둘 점
+
+- **같은 웹훅으로 여러 서버에서 동시에 돌리지 마세요.** 알림이 중복으로 옵니다.
+- 상태는 도커 볼륨에 저장되므로 재시작해도 **이미 알린 회차를 다시 알리지 않습니다.**
+- 서버 시간대와 무관하게 컨테이너는 `Asia/Seoul` 로 동작합니다.
+- 로그는 10MB × 3개로 제한되어 있어 디스크를 채우지 않습니다.
+
+### 잘 안 될 때
+
+| 증상 | 원인과 해결 |
+| --- | --- |
+| `Discord 전송 실패 HTTP 404` | 웹훅 URL이 틀렸거나 삭제됨. `.env` 확인 후 `docker compose up -d --force-recreate` |
+| 알림이 안 옴 | 정상일 수 있음. CGV는 며칠 단위로 오픈하므로 조용한 게 기본. 매일 오전 9시 생존 신고로 확인 |
+| `permission denied` (도커) | `sudo usermod -aG docker $USER` 후 재접속 |
+| 컨테이너가 계속 재시작 | `docker compose logs --tail 50` 으로 원인 확인 |
+
+컨테이너가 환경변수를 제대로 받았는지 확인하려면:
+
+```bash
+docker compose exec cgv-open-push printenv DISCORD_WEBHOOK_URL
+```
+
 ## 차단 위험과 대응
 
 CGV는 Cloudflare 계열의 봇 차단을 사용합니다. 실제로 headless 브라우저로 접속하면
