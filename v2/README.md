@@ -1,0 +1,223 @@
+# CGV 예매 오픈 알리미 v2
+
+CGV 리뉴얼 이후의 신규 API에 맞춰 새로 작성한 버전입니다. 용산아이파크몰 IMAX(용아맥)처럼
+예매 오픈 시점이 사전 공지되지 않는 특별관을 감시해, 회차가 열리는 즉시 Discord로 알립니다.
+
+## v1이 동작하지 않는 이유
+
+v1이 사용하던 `http://ticket.cgv.co.kr/CGV2011/RIA/CJ000.aspx/...` 엔드포인트는 CGV 리뉴얼로
+폐기되어 현재 **HTTP 404**를 반환합니다. `TheaterCd` 등 암호화된 파라미터 체계도 함께 사라졌습니다.
+
+## v2가 사용하는 경로
+
+현재 CGV 웹은 Next.js 기반이며, 브라우저는 백엔드(`api.cgv.co.kr`)를 직접 호출하지 않고
+BFF 프록시를 경유합니다. 프론트엔드 번들의 매핑 테이블 기준:
+
+| 백엔드 경로 | BFF 경로 |
+| --- | --- |
+| `/cnm/atkt/*` | `https://cgv.co.kr/api/v1/booking/*` |
+| `/cnm/*` | `https://cgv.co.kr/api/v1/content/*` |
+
+`api.cgv.co.kr`을 직접 호출하면 401/403이지만, **BFF는 별도 인증·서명 없이 GET 호출이 가능**합니다.
+따라서 헤드리스 브라우저 없이 순수 HTTP 요청만으로 폴링할 수 있습니다.
+
+사용하는 엔드포인트:
+
+| 용도 | 경로 | 응답 크기 | 응답 시간 |
+| --- | --- | --- | --- |
+| 예매 가능 일자 | `booking/searchSiteScnscYmdListBySite` | ~0.7KB | ~70ms |
+| 상영 회차 (관 지정) | `booking/searchMovScnInfo` + `scnsNo` | ~10KB | ~120ms |
+| 상영 회차 (극장 전체) | `booking/searchMovScnInfo` | ~220KB | ~390ms |
+| 극장 목록 | `content/site/searchAllRegionAndSite` | ~14KB | ~90ms |
+
+## v1 대비 개선점
+
+| 항목 | v1 | v2 |
+| --- | --- | --- |
+| API | 폐기됨(404) | 동작하는 신규 BFF |
+| 감지 주기 | 5분 고정 | 일자 2초 / 회차 15초 |
+| 변경 감지 | XML 전체 문자열 diff | 회차 고유키 비교 |
+| 오탐 | 잔여좌석 등 무관한 값 변동에도 발생 | 없음 |
+| 재시작 | 오류 시 `os.execl`로 프로세스 통째 재시작 | 백오프 후 루프 유지, 상태 보존 |
+| 중복 알림 | 재시작하면 기준선 소실 | `state.json`으로 상태 유지 |
+| 알림 내용 | 텍스트 나열 | 영화·회차·좌석 + 예매 페이지 딥링크 || 요청량 | 대상당 220KB / 5분 | 대상당 10KB 단위 |
+
+## 감시 전략
+
+1. **일자 감시 (기본 2초)** — `searchSiteScnscYmdListBySite`는 700B에 불과해 짧은 주기로 돌아도
+   부담이 적습니다. 예매 오픈으로 상영일이 늘어나면 이 목록이 가장 먼저 반응하므로,
+   새 일자가 보이면 그 즉시 해당 일자의 회차를 조회합니다. **가장 빠른 감지 경로입니다.**
+2. **회차 스윕 (기본 15초)** — 이미 열려 있던 날짜에 회차만 추가되는 경우를 잡습니다.
+   신작은 예매 창의 뒤쪽 날짜에 먼저 붙는 경향이 있어 뒤쪽 14일을 자주 돌고,
+   전체 구간은 120초 주기로 확인합니다.
+
+기본 설정 기준 요청량은 대상당 약 1.6 req/s 입니다.
+
+## 예매 딥링크
+
+알림의 제목과 "지금 바로 예매하기"를 누르면 **해당 극장·날짜의 상영시간표 화면**으로 바로 이동합니다.
+시간 버튼을 한 번만 더 누르면 좌석 선택으로 넘어갑니다.
+
+```
+https://cgv.co.kr/cnm/movieBook/cinema?siteNo=0013&siteNm=<극장명>&scnYmd=20260809
+```
+
+실제 브라우저로 확인한 동작:
+
+| 파라미터 | 반영 여부 |
+| --- | --- |
+| `siteNo` | 반영됨 (해당 극장 시간표 조회) |
+| `scnYmd` | 반영됨 (해당 날짜 선택) |
+| `siteNm` | **필수** — 없으면 시간표 영역이 렌더링되지 않음 |
+| `scnsNo`, `tcscnsGradCd` | 무시됨 (상영관/특별관 필터는 URL로 지정 불가) |
+
+극장명은 실행 시 API에서 자동으로 조회하므로 별도 설정이 필요 없습니다.
+회차 단위 URL은 존재하지 않습니다. 신규 CGV는 좌석 선택 화면을 클라이언트 상태로만
+관리하기 때문에, 시간표 화면이 링크로 도달할 수 있는 가장 깊은 지점입니다.
+
+## 설치
+
+```bash
+cd v2
+pip install -r requirements.txt
+```
+
+## Discord 웹훅 준비
+
+Discord 채널 → 채널 편집 → 연동 → 웹후크 → 새 웹후크 → URL 복사.
+
+```powershell
+$env:DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+python main.py test-notify
+```
+
+## 사용법
+
+```bash
+python main.py run           # 감시 시작
+python main.py check         # 감시 대상의 현재 회차를 1회 조회
+python main.py sites 용산     # 극장 코드 조회
+python main.py screens 0013  # 해당 극장의 상영관/특별관 코드 조회
+python main.py test-notify   # 웹훅 연결 확인
+```
+
+`screens` 출력 예시:
+
+```
+grade_cd  scns_no   등급        상영관
+02        003       4DX       4DX관
+03        018       아이맥스      IMAX관
+04        004       SCREENX   SCREENX관 (리클라이너) with PRIVATE BOX
+04        012       SCREENX   14관[SCREENX] (Laser)
+```
+
+## 설정
+
+환경변수로 조정합니다.
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `DISCORD_WEBHOOK_URL` | (없음) | 비우면 콘솔에만 출력됩니다 |
+| `DISCORD_MENTION` | (없음) | 오픈 알림에 붙일 멘션. `@everyone` 등 |
+| `CGV_FAST_INTERVAL` | `5` | 예매 가능 일자 폴링 주기(초) |
+| `CGV_SWEEP_INTERVAL` | `30` | 회차 스윕 주기(초) |
+| `CGV_SWEEP_CONCURRENCY` | `3` | 스윕 동시 요청 수 |
+| `CGV_STATE_PATH` | `./state.json` | 상태 파일 경로 |
+| `CGV_LOG_PATH` | `./cgv-open-push-v2.log` | 로그 경로 |
+
+감시 대상은 `targets.json`으로 교체할 수 있습니다. `targets.json.example`을 복사해 사용하세요.
+`scns_no`를 지정하면 응답이 220KB에서 10KB로 줄어드므로 가급적 지정하는 것이 좋습니다.
+관 번호는 `python main.py screens <siteNo>`로 확인합니다.
+
+## 주요 코드값
+
+| 항목 | 값 |
+| --- | --- |
+| 회사코드 `coCd` | `A420` |
+| 용산아이파크몰 `siteNo` | `0013` |
+| 용아맥 IMAX관 `scnsNo` | `018` (624석) |
+| 특별관 등급 `tcscnsGradCd` | `01` 일반 / `02` 4DX / `03` IMAX / `04` SCREENX |
+
+## 동작 방식 참고
+
+- **최초 실행**은 현재 열려 있는 회차를 기준선으로만 저장하고 알림을 보내지 않습니다.
+  이후 새로 생긴 회차부터 알립니다.
+- 상태는 `state.json`에 원자적으로 저장되므로 재시작해도 중복 알림이 발생하지 않습니다.
+- 지난 날짜의 상태는 자동으로 정리됩니다.
+
+## Docker
+
+```bash
+docker build -t cgv-open-push-v2 .
+docker run -d --name cgv-open-push --restart unless-stopped \
+  -e DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." \
+  -v cgv-state:/data \
+  cgv-open-push-v2
+```
+
+컨테이너 시간대는 `Asia/Seoul`로 설정되어 있습니다.
+상태 파일은 `/data` 볼륨에 저장되므로 컨테이너를 재시작하거나 다시 만들어도
+중복 알림이 발생하지 않습니다.
+
+```bash
+docker logs -f cgv-open-push     # 동작 확인
+docker restart cgv-open-push     # 재시작
+docker rm -f cgv-open-push       # 중지 및 삭제
+```
+
+## 차단 위험과 대응
+
+CGV는 Cloudflare 계열의 봇 차단을 사용합니다. 실제로 headless 브라우저로 접속하면
+`RAY_ID`와 `CLIENT_IP`가 노출된 차단 페이지가 반환되는 것을 확인했습니다.
+**차단당하면 알림을 받아도 정작 예매를 못 하므로**, v2는 속도보다 안전을 우선합니다.
+
+**실측 요청량** (기본 설정, 대상 1개 기준)
+
+| 항목 | 값 |
+| --- | --- |
+| 초당 요청 | 약 0.64 req/s (1.5초에 1건) |
+| 일일 요청 | 약 55,000건 |
+| 응답 크기 | 일자 목록 700B / 회차 조회 10KB (`scns_no` 지정 시) |
+
+**적용한 방어 장치**
+
+1. **보수적 기본 주기** — 일자 5초, 회차 스윕 30초, 동시 요청 3개.
+2. **지터** — 모든 대기 시간에 ±25% 무작위를 섞어 규칙적인 패턴을 없앱니다.
+3. **차단 자동 감지** — HTTP `429` / `401` / `403`, 그리고 응답 본문의 차단 페이지 문구
+   (`비정상적으로`, `이용이 제한`, `RAY_ID`)를 감지합니다.
+4. **단계적 백오프** — 차단이 감지되면 폴링을 **5분 → 15분 → 30분 → 1시간** 순으로
+   점점 길게 멈춥니다. 정상 응답이 돌아오면 단계가 초기화됩니다.
+5. **Discord 경고** — 차단 감지 시 빨간색 경고 메시지를 보내므로 즉시 알 수 있습니다.
+6. **`Retry-After` 존중** — Discord 웹훅의 레이트리밋도 헤더값대로 대기합니다.
+
+**의도적으로 하지 않는 것**
+
+User-Agent 로테이션, 프록시 경유, IP 우회 등 접근 통제를 회피하는 동작은 넣지 않았습니다.
+차단은 우회 대상이 아니라 물러설 신호로 취급합니다.
+
+**주기를 더 늦추고 싶다면**
+
+```bash
+-e CGV_FAST_INTERVAL=15 -e CGV_SWEEP_INTERVAL=120 -e CGV_SWEEP_CONCURRENCY=2
+```
+
+이 설정이면 요청량이 약 1/5로 줄어듭니다. 감지는 수십 초 늦어지지만 여전히
+사람이 수동으로 새로고침하는 것보다 훨씬 빠릅니다.
+
+## 주의
+
+- 이 도구는 공개적으로 접근 가능한 경로의 정보를 조회해 변동을 알릴 뿐이며, 예매를 자동으로
+  수행하지 않습니다.
+- 폴링 주기를 과도하게 낮추면 CGV 서버에 부담을 주고 차단될 수 있습니다. 기본값 사용을 권장합니다.
+- CGV가 API 구조를 다시 변경하면 동작하지 않을 수 있습니다.
+
+## 라이선스 및 출처
+
+이 프로젝트는 [0w0i0n0g0/cgv-open-push](https://github.com/0w0i0n0g0/cgv-open-push)에서
+파생되었으며, 원본과 동일하게 **AGPL-3.0** 라이선스를 따릅니다.
+
+v2의 코드는 새로 작성되었지만, 원본의 아이디어와 문제 정의에 기반합니다.
+루트의 [LICENSE](../LICENSE) 파일을 참고하세요.
+
+AGPL-3.0은 이 소프트웨어를 **네트워크 서비스로 제공할 경우** 소스 코드를 공개할 의무를
+부과합니다. 개인이 직접 실행해 알림을 받는 용도는 해당되지 않습니다.

@@ -15,6 +15,16 @@ image_by_<a href="https://kr.freepik.com/free-photo/3d-render-notification-bell-
 <br>
 <br>
 
+> ### ⚠️ v1은 현재 동작하지 않습니다
+>
+> CGV 홈페이지 리뉴얼로 v1이 사용하던 레거시 API(`ticket.cgv.co.kr/CGV2011/RIA/...`)가
+> **HTTP 404로 제거**되었습니다.
+>
+> 새 BFF API 기반으로 다시 만든 **[v2](./v2/)** 를 사용하세요.
+> Discord 웹훅 알림, 예매 페이지 딥링크, 차단 자동 감지·백오프, Docker 지원이 포함되어 있습니다.
+
+<br>
+
 ### 📢 안내
 
 당분간 용산 CGV 특별관에 대한 예매 오픈 알리미만 운영될 예정입니다.
